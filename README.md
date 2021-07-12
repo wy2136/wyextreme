@@ -8,5 +8,5 @@ A Python Package for GEV or GEV-shift fit
 ![wyexteme_fit](example/wyextreme_fit.png)
 
 ## notebook examples
-* [2021 NW North American heat wave](http://nbviewer.jupyter.org/github/wy2136/wyextreme/blob/master/example/wyextreme_example.ipynb)
-* [test a given distribution](http://nbviewer.jupyter.org/github/wy2136/wyextreme/blob/master/example/wyextreme_test.ipynb)
+* [2021 NW North American heat wave](https://nbviewer.jupyter.org/github/wy2136/wyextreme/blob/main/example/wyextreme_example.ipynb)
+* [test a given distribution](https://nbviewer.jupyter.org/github/wy2136/wyextreme/blob/main/example/wyextreme_test.ipynb)
