@@ -63,7 +63,7 @@ def plot_fit(data, datacv, cv_level=None, fit_result=None, ax=None, fit_kws=None
         fig,ax = plt.subplots()
     if fit_kws is None:
         fit_kws = {}
-    upper = kws.pop('upper', data.size*10)
+    upper = kws.pop('upper', data.size*100)
     label = kws.pop('label', cv_level[0])
     #fit by user defined likelihood function
     if fit_result is None: #do the fit
@@ -86,7 +86,7 @@ def plot_fit(data, datacv, cv_level=None, fit_result=None, ax=None, fit_kws=None
 
     return r
 
-def fit_bootstrap(data, datacv, nmc=100, mc_seed=None, **kws):
+def fit_bootstrap(data, datacv, nmc=100, mc_seed=0, **kws):
     """GEV shift fit bootstrap. 
         data: input array-like data to fit
         datacv: covariate
@@ -103,7 +103,7 @@ def fit_bootstrap(data, datacv, nmc=100, mc_seed=None, **kws):
     data_mc = data[mci]
     datacv_mc = datacv[mci]
     params = np.zeros(shape=(nmc, 4)) + np.nan
-     
+    #bootstrap
     for ii in tqdm(range(nmc)):
         r = fit(data_mc[ii,:], datacv_mc[ii,:], **kws)
         if r.success:
@@ -118,12 +118,19 @@ def fit_bootstrap(data, datacv, nmc=100, mc_seed=None, **kws):
     alpha = xr.DataArray(params[:,3], dims='mc')
 
     ds = xr.Dataset(dict(mu0=mu0, sigma=sigma, xi=xi, alpha=alpha))
+    #best fit
+    r = fit(data, datacv, **kws)
+    ds['mu0_best'] = xr.DataArray(r.x[0])
+    ds['sigma_best'] = xr.DataArray(r.x[1])
+    ds['xi_best'] = xr.DataArray(r.x[2])
+    ds['alpha_best'] = xr.DataArray(r.x[3])
+
     return ds 
-def plot_fit_bootstrap(data, datacv, cv_level=None, bsfit=None, nmc=100, mc_seed=None, ci=95, upper_rp=None, ax=None, fit_kws=None, **kws):
+def plot_fit_bootstrap(data, datacv, cv_level=None, bsfit=None, nmc=100, mc_seed=0, ci=95, upper_rp=None, ax=None, fit_kws=None, **kws):
     if cv_level is None:
         cv_level = ('max co-variate', datacv.max().item())
     if upper_rp is None:
-        upper_rp = data.size*10
+        upper_rp = data.size*100
     if ax is None:
         fig,ax = plt.subplots()
     if fit_kws is None:
@@ -167,13 +174,29 @@ def plot_covariate(data, datacv, fit_result=None, ax=None, fit_kws=None, **kws):
     if r.success:
         mu0,sigma,xi,alpha = r.x
         print('wy fit params:'.ljust(16), f'{mu0=:.4g}; {sigma=:.4g}; {xi=:.4g}; {alpha=:.4g}') 
-        ax.axline((0, mu0), slope=alpha, **kws)
-        ax.axline((0, mu0+gev_return_period_inverse(6, 0, sigma, xi)), slope=alpha, lw=1, ls='--', **kws)
-        ax.axline((0, mu0+gev_return_period_inverse(40, 0, sigma, xi)), slope=alpha, lw=1, ls='--',  **kws)
+        ax.axline((datacv[0].item(), mu0+alpha*datacv[0].item()), slope=alpha, **kws)
+        ax.axline((datacv[0].item(), mu0+alpha*datacv[0].item()+gev_return_period_inverse(6, 0, sigma, xi)), slope=alpha, lw=1, ls='--', **kws)
+        ax.axline((datacv[0].item(), mu0+alpha*datacv[0].item()+gev_return_period_inverse(40, 0, sigma, xi)), slope=alpha, lw=1, ls='--',  **kws)
     ax.set_xlabel('co-variate')
     ax.set_ylabel('return value')
 
-def test(mu0=None, sigma=None, xi=None, alpha=None, datacv=None, nmc=100, mc_seed=None, ci=95, nsmp=100):
+def fit_all(data, datacv, cv_levels=None, nmc=100, mc_seed=0, ci=95, upper_rp=None, fit_kws=None):
+    if cv_levels is None:
+        cv_levels = [('min co-variate', datacv.min().item()), ('max co-variate', datacv.max().item())]
+
+    plot_covariate(data, datacv, color='k')
+    
+    fig,ax = plt.subplots()
+    ds = plot_fit_bootstrap(data, datacv, cv_levels[0], nmc=nmc, mc_seed=mc_seed, ci=ci, upper_rp=upper_rp, ax=ax, fit_kws=fit_kws, color='C0')
+    if len(cv_levels) > 1:
+        for ii,cv_level in enumerate(cv_levels[1:], start=1):
+            plot_fit_bootstrap(data, datacv, cv_levels[ii], bsfit=ds, ci=ci, upper_rp=upper_rp, ax=ax, fit_kws=fit_kws, color=f'C{ii}')
+    ax.legend()
+    
+    return ds
+    
+
+def test(mu0=None, sigma=None, xi=None, alpha=None, datacv=None, seed=1, nmc=100, mc_seed=0, ci=95, nsmp=100):
     #specify params
     rng = np.random.default_rng()
     if mu0 is None:
@@ -190,6 +213,8 @@ def test(mu0=None, sigma=None, xi=None, alpha=None, datacv=None, nmc=100, mc_see
     if datacv is None:
         datacv = np.linspace(0, 2, nsmp)
     #generate data
+    rng = np.random.default_rng(seed)#seed to generate genextreme random variables
+    genextreme.random_state = rng
     data = genextreme.rvs(-xi, loc=mu0+alpha*datacv, scale=sigma)
     #validate
     #co-variate plot
@@ -220,21 +245,29 @@ if __name__ == '__main__':
     if len(sys.argv)<=1:
         test()
     elif len(sys.argv)>1 and sys.argv[1]=='test': #e.g. python -m wyextreme.gev_shift test xi=-0.1
-        kws = dict(mu0=None, sigma=None, xi=None, alpha=None, datacv=None, nmc=100, mc_seed=None, ci=95, nsmp=100)
+        kws = dict(mu0=None, sigma=None, xi=None, alpha=None, datacv=None, seed=1, nmc=100, mc_seed=0, ci=95, nsmp=100)
         if len(sys.argv)>2:
             for s in sys.argv[2:]:
                 key,v = s.split('=')
-                v = int(v) if key in ('nmc', 'mc_seed', 'nsmp') else float(v)
+                v = int(v) if key in ('seed', 'nmc', 'mc_seed', 'nsmp') else float(v)
                 if key in kws: kws[key] = v
         test(**kws)
     elif len(sys.argv)>2: # two input data files to compare
+        kws = dict(cv_levels=None, nmc=100, mc_seed=0, ci=95, upper_rp=None)
         da0 = xr.open_dataarray(sys.argv[1])
         da1 = xr.open_dataarray(sys.argv[2])
+        if 'en' in da0.dims:
+            da0 = da0.stack(s=['en', 'year'])
+        if 'en' in da1.dims:
+            da1 = da1.stack(s=['en', 'year'])
+        fit_all(da0, da1, **kws)
+        """
         fig, ax = plt.subplots()
         plot_covariate(da0, da1, ax=ax, color='k')
         fig,ax = plt.subplots()
         ds = plot_fit_bootstrap(da0, da1, ('min co-variate', da1.min().item()), ax=ax, color='C0')#, upper_rp=da0.size*40) 
         plot_fit_bootstrap(da0, da1, ('max co-variate', da1.max().item()), bsfit=ds, ax=ax, color='C1')#, upper_rp=da0.size*40) 
+        """
 
     #savefig
     if 'savefig' in sys.argv:
