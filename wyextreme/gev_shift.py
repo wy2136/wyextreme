@@ -18,7 +18,7 @@ if __name__ == '__main__':
 #
 #start from here
 #negative log likelihood
-def negLogLikelihood(params, data, datacv, xi_bounds=None):
+def _negLogLikelihood(params, data, datacv, xi_bounds=None):
     """GEV shift negative log likelihood.
         params: (mu0, sigma, xi, alpha)
         data: sample(s)
@@ -51,7 +51,7 @@ def fit(data, datacv, **kws):
     x0 = kws.pop('x0', x0_default)
     #print('initial params:'.ljust(16), f'{mu0_guess}; {sigma_guess=}; {xi_guess=}; {alpha_guess=}')
 
-    r = minimize(negLogLikelihood, x0, args=(data,datacv, xi_bounds), method=method, bounds=bounds, **kws)
+    r = minimize(_negLogLikelihood, x0, args=(data,datacv, xi_bounds), method=method, bounds=bounds, **kws)
     if not r.success:
         print(f'{r = }')
         print('[failed]:', r.message)
@@ -196,6 +196,40 @@ def fit_all(data, datacv, cv_levels=None, nmc=100, mc_seed=0, ci=95, upper_rp=No
     return ds
     
 
+def makedata(mu0=None, sigma=None, xi=None, alpha=None, datacv=None, nsmp=100, seed=1, ofile=None):
+    #specify params
+    rng = np.random.default_rng()
+    if mu0 is None:
+        mu0 = rng.uniform(10, 20)
+    if sigma is None:
+        sigma = rng.uniform(0, 10)
+    if xi is None:
+        xi = rng.uniform(-1, 1)
+    if alpha is None:
+        alpha = rng.uniform(-4, 4)
+    true_values = mu0,sigma,xi,alpha
+    note = 'true params:'.ljust(16) + f'{mu0=:.4g}; {sigma=:.4g}; {xi=:.4g}; {alpha=:.4g}'
+    print(note)
+    #specify co-variate
+    if datacv is None:
+        datacv = np.linspace(0, 2, nsmp)
+    #generate data
+    rng = np.random.default_rng(seed)#seed to generate genextreme random variables
+    genextreme.random_state = rng
+    data = genextreme.rvs(-xi, loc=mu0+alpha*datacv, scale=sigma)
+    #show data
+    plt.plot(datacv, data, ls='none', marker='o', fillstyle='none')
+
+    if ofile is not None:# save data
+        ofile_data = 'data_' + ofile
+        xr.DataArray(data, dims='year').assign_coords(year=range(1900,1900+data.size)).assign_attrs(note=note).to_dataset(name='mydata').to_netcdf(ofile_data)
+        print('[saved]:', ofile_data)
+        ofile_datacv = 'datacv_' + ofile
+        xr.DataArray(datacv, dims='year').assign_coords(year=range(1900, 1900+datacv.size)).to_dataset(name='mycovariate').to_netcdf(ofile_datacv)
+        print('[saved]:', ofile_datacv)
+    return data, datacv
+
+        
 def test(mu0=None, sigma=None, xi=None, alpha=None, datacv=None, seed=1, nmc=100, mc_seed=0, ci=95, nsmp=100):
     #specify params
     rng = np.random.default_rng()
@@ -245,13 +279,26 @@ if __name__ == '__main__':
     if len(sys.argv)<=1:
         test()
     elif len(sys.argv)>1 and sys.argv[1]=='test': #e.g. python -m wyextreme.gev_shift test xi=-0.1
-        kws = dict(mu0=None, sigma=None, xi=None, alpha=None, datacv=None, seed=1, nmc=100, mc_seed=0, ci=95, nsmp=100)
+        kws = dict(mu0=None, sigma=None, xi=None, alpha=None, seed=1, nmc=100, mc_seed=0, ci=95, nsmp=100)
         if len(sys.argv)>2:
             for s in sys.argv[2:]:
                 key,v = s.split('=')
                 v = int(v) if key in ('seed', 'nmc', 'mc_seed', 'nsmp') else float(v)
                 if key in kws: kws[key] = v
         test(**kws)
+    elif len(sys.argv)>1 and sys.argv[1]=='makedata': #e.g. python -m wyextreme.gev_shift make data
+        kws = dict(mu0=None, sigma=None, xi=None, alpha=None, nsmp=100, seed=1, ofile=None)
+        if len(sys.argv)>2:
+            for s in sys.argv[2:]:
+                key,v = s.split('=')
+                if key in ('seed', 'nsm'):
+                    v = int(v)
+                elif key in ('ofile',):
+                    pass
+                else:
+                    v = float(v)
+                if key in kws: kws[key] = v
+        makedata(**kws)
     elif len(sys.argv)>2: # two input data files to compare
         kws = dict(cv_levels=None, nmc=100, mc_seed=0, ci=95, upper_rp=None)
         da0 = xr.open_dataarray(sys.argv[1])
