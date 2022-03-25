@@ -19,25 +19,28 @@ if __name__ == '__main__':
 #start from here
 #negative log likelihood
 def _negLogLikelihood(params, data, datacv, xi_bounds=None):
-    """GEV shift negative log likelihood.
-        params: (mu0, sigma, xi, alpha)
+    """GEV scale negative log likelihood.
+        params: (mu0, sigma0, xi, alpha)
         data: sample(s)
         datacv: co-variate
     Ref: https://en.wikipedia.org/wiki/Generalized_extreme_value_distribution
-        https://ascmo.copernicus.org/articles/6/177/2020/
+        https://ascmo.copernicus.org/articles/6/177/2020
     """
     if xi_bounds is None or xi_bounds==(None, None):
-        xi_bounds = (-np.inf, np.inf)
-        #xi_bounds = (-0.4, 0.4)
-    mu0, sigma, xi, alpha = params
-    mu = mu0 + alpha*datacv 
+        #xi_bounds = (-np.inf, np.inf)
+        xi_bounds = (-0.4, 0.4)
+    mu0, sigma0, xi, alpha = params
+    #mu = mu0 + alpha*datacv  #shift
+    #scale: see paper https://ascmo.copernicus.org/articles/6/177/2020
+    mu = mu0*exp(alpha*datacv/mu0)
+    sigma = sigma0*exp(alpha*datacv/mu0)
     s = (data - mu)/sigma
     if xi < xi_bounds[0] or xi > xi_bounds[1]:#effectively set xi bounds
             return np.inf
     elif xi == 0:
-        return data.size*log(sigma) + np.sum(s + exp(-s))
+        return np.sum(log(sigma) + s + exp(-s))
     else:
-        return -np.sum( log(xi*s>-1) ) + data.size*log(sigma) + np.sum( (1+1/xi)*log(1+xi*s) ) + np.sum( (1+xi*s)**(-1/xi) )
+        return -np.sum( log(xi*s>-1) ) + np.sum( log(sigma) ) + np.sum( (1+1/xi)*log(1+xi*s) ) + np.sum( (1+xi*s)**(-1/xi) )
 def fit(data, datacv, **kws):
     """GEV fit using maximum likelihood"""
     method = kws.pop('method', 'Nelder-Mead')
@@ -47,9 +50,9 @@ def fit(data, datacv, **kws):
     bounds = ( (None, None),  (0, None),  xi_bounds, (None, None) )
     alpha_guess = np.corrcoef(data, datacv)[0,1]*data.std().item()/datacv.std().item()
     mu0_guess = data.mean().item() - alpha_guess*datacv.mean().item()
-    sigma_guess = (data - alpha_guess*datacv).std().item()
+    sigma0_guess = (data - alpha_guess*datacv).std().item()
     xi_guess = -0.1
-    x0_default = (mu0_guess, sigma_guess, xi_guess, alpha_guess)
+    x0_default = (mu0_guess, sigma0_guess, xi_guess, alpha_guess)
     x0 = kws.pop('x0', x0_default)
     #print('initial params:'.ljust(16), f'{mu0_guess}; {sigma_guess=}; {xi_guess=}; {alpha_guess=}')
 
@@ -73,11 +76,15 @@ def plot_fit(data, datacv, cv_level=None, fit_result=None, ax=None, fit_kws=None
     else: #already done the fit: use the result directly
         r = fit_result
     if r.success:
-        mu0, sigma, xi, alpha = r.x
-        print('wy fit params:'.ljust(16), f'{mu0=:.4g}; {sigma=:.4g}; {xi=:.4g}; {alpha=:.4g}') 
+        mu0, sigma0, xi, alpha = r.x
+        print('wy fit params:'.ljust(16), f'{mu0=:.4g}; {sigma0=:.4g}; {xi=:.4g}; {alpha=:.4g}') 
         #empirical/fit return periods
-        plot_smp_return_period(data-alpha*datacv+alpha*cv_level[1], ax=ax, **kws)
-        plot_return_period(mu0+alpha*cv_level[1], sigma, xi, upper=upper, ax=ax, label=label, **kws)
+        data_scale = data * exp( alpha*(cv_level[1] - datacv)/mu0 )
+        plot_smp_return_period(data_scale, ax=ax, **kws)
+        #theoretical curve at specified co-variate level
+        mu_c = mu0 * exp( alpha*cv_level[1]/mu0 )
+        sigma_c = sigma0 * exp( alpha*cv_level[1]/mu0 )
+        plot_return_period(mu_c, sigma_c, xi, upper=upper, ax=ax, label=label, **kws)
 
     ax.set_xlabel('return period')
     try:
@@ -89,7 +96,7 @@ def plot_fit(data, datacv, cv_level=None, fit_result=None, ax=None, fit_kws=None
     return r
 
 def fit_bootstrap(data, datacv, nmc=100, mc_seed=0, **kws):
-    """GEV shift fit bootstrap. 
+    """GEV scale fit bootstrap. 
         data: input array-like data to fit
         datacv: covariate
         nmc: size of Monte Carlo samples
@@ -115,15 +122,15 @@ def fit_bootstrap(data, datacv, nmc=100, mc_seed=0, **kws):
     #with mp.Pool(processes=min(40, mp.cpu_count(), nmc)) as p:
     #    p.map(func_bs, range(nmc))
     mu0 = xr.DataArray(params[:,0], dims='mc')
-    sigma = xr.DataArray(params[:,1], dims='mc')
+    sigma0 = xr.DataArray(params[:,1], dims='mc')
     xi = xr.DataArray(params[:,2], dims='mc')
     alpha = xr.DataArray(params[:,3], dims='mc')
 
-    ds = xr.Dataset(dict(mu0=mu0, sigma=sigma, xi=xi, alpha=alpha))
+    ds = xr.Dataset(dict(mu0=mu0, sigma0=sigma0, xi=xi, alpha=alpha))
     #best fit
     r = fit(data, datacv, **kws)
     ds['mu0_best'] = xr.DataArray(r.x[0])
-    ds['sigma_best'] = xr.DataArray(r.x[1])
+    ds['sigma0_best'] = xr.DataArray(r.x[1])
     ds['xi_best'] = xr.DataArray(r.x[2])
     ds['alpha_best'] = xr.DataArray(r.x[3])
 
@@ -139,23 +146,22 @@ def plot_fit_bootstrap(data, datacv, cv_level=None, bsfit=None, nmc=100, mc_seed
         fit_kws = {}
     #direct fit plot
     r = plot_fit(data, datacv, cv_level=cv_level, ax=ax, fit_kws=fit_kws, upper=upper_rp, **kws)
-    mu0, sigma, xi, alpha = r.x
+    mu0, sigma0, xi, alpha = r.x
     #bootstrap
     if bsfit is None: #do the bootstrap fit
         ds = fit_bootstrap(data, datacv, nmc=nmc, mc_seed=mc_seed, **fit_kws)
     else: #already done the bootstrap fit: use the result directly
         ds = bsfit
     ci_bounds = [(1-ci/100)/2, (1+ci/100)/2]
-    for ii,daname in enumerate(('mu0', 'sigma', 'xi', 'alpha')):
+    for ii,daname in enumerate(('mu0', 'sigma0', 'xi', 'alpha')):
         q = ds[daname].quantile(ci_bounds, dim='mc')
         print(f'{daname} and {ci}% CI:'.rjust(20), f'{r.x[ii]:.4g}({q[0].item():.4g}, {q[1].item():.4g})')
     print()
     #confidence interval of the return value
-    mu_shift = mu0 + alpha*cv_level[1]
     lower, upper = 1, np.log10(upper_rp) #return period bounds
     rp = np.logspace(lower, upper, 100)
-    yy = [gev_return_period_inverse(rp, mu0+alpha*cv_level[1], sigma, xi) 
-        for mu0,sigma,xi,alpha in zip(ds.mu0.values, ds.sigma.values, ds.xi.values, ds.alpha.values)]
+    yy = [gev_return_period_inverse(rp, mu0*exp( alpha*cv_level[1]/mu0 ), sigma0*exp( alpha*cv_level[1]/mu0 ), xi) 
+        for mu0,sigma0,xi,alpha in zip(ds.mu0.values, ds.sigma0.values, ds.xi.values, ds.alpha.values)]
     yy = xr.DataArray(yy, dims=('mc', 'rp')).assign_coords(rp=rp)
     yy.quantile(ci_bounds, dim='mc').plot(x='rp', ls='--', lw=1, hue='quantile', add_legend=False, **kws)
 
@@ -174,11 +180,26 @@ def plot_covariate(data, datacv, fit_result=None, ax=None, fit_kws=None, **kws):
     else:
         r = fit_result
     if r.success:
-        mu0,sigma,xi,alpha = r.x
-        print('wy fit params:'.ljust(16), f'{mu0=:.4g}; {sigma=:.4g}; {xi=:.4g}; {alpha=:.4g}') 
+        mu0,sigma0,xi,alpha = r.x
+        print('wy fit params:'.ljust(16), f'{mu0=:.4g}; {sigma0=:.4g}; {xi=:.4g}; {alpha=:.4g}') 
+        """
         ax.axline((datacv[0].item(), mu0+alpha*datacv[0].item()), slope=alpha, **kws)
         ax.axline((datacv[0].item(), mu0+alpha*datacv[0].item()+gev_return_period_inverse(6, 0, sigma, xi)), slope=alpha, lw=1, ls='--', **kws)
         ax.axline((datacv[0].item(), mu0+alpha*datacv[0].item()+gev_return_period_inverse(40, 0, sigma, xi)), slope=alpha, lw=1, ls='--',  **kws)
+        """
+        x = np.linspace(datacv.min(), datacv.max(), 100)
+        sigma = sigma0*exp( alpha*x/mu0 )
+        #plot mu
+        y = mu0*exp( alpha*x/mu0 )
+        ax.plot(x, y, **kws)
+        #plot line of return period 6
+        #y = [gev_return_period_inverse(6, mu_, sigma_, xi) for mu_,sigma_ in zip(y, sigma)]
+        y = y + sigma
+        ax.plot(x, y, lw=1, ls='--', **kws)
+        #plot line of return period 40
+        #y = [gev_return_period_inverse(40, mu_, sigma_, xi) for mu_,sigma_ in zip(y, sigma)]
+        y = y + sigma
+        ax.plot(x, y, lw=1, ls='--', **kws)
     ax.set_xlabel('co-variate')
     ax.set_ylabel('return value')
 
@@ -198,9 +219,11 @@ def plot_mu_ci(data, datacv, cv0=None, bsfit=None, nmc=100, mc_seed=0, ci=95, fi
         ax = plt.gca()
     capsize = kws.pop('capsize', 3)
 
-    mu_cv0 = ds['mu0_best'] + ds['alpha_best'] * cv0
+    #mu_cv0 = ds['mu0_best'] + ds['alpha_best'] * cv0 #shifted
+    mu_cv0 = ds['mu0_best']*exp( ds['alpha_best']*cv0/ds['mu0_best'] ) #scaled
     ci_bound = (1 - ci/100)/2, (1 + ci/100)/2
-    mu_cv0_ci = ( ds['mu0'] + ds['alpha'] * cv0 ).quantile(ci_bound, dim='mc')
+    #mu_cv0_ci = ( ds['mu0'] + ds['alpha'] * cv0 ).quantile(ci_bound, dim='mc') #shifted
+    mu_cv0_ci = ( ds['mu0']*exp( ds['alpha']*cv0/ds['mu0'] ) ).quantile(ci_bound, dim='mc') #scaled
 
     x = cv0
     y = mu_cv0
@@ -216,7 +239,7 @@ def fit_all(data, datacv, cv_levels=None, nmc=100, mc_seed=0, ci=95, upper_rp=No
     if fit_kws is None:
         fit_kws = {}
 
-    plot_covariate(data, datacv, color='k', fit_kws=fit_kws)
+    plot_covariate(data, datacv, color='k')
     ds = fit_bootstrap(data, datacv, nmc=nmc, mc_seed=mc_seed, **fit_kws)
     plot_mu_ci(data, datacv, cv0=cv_levels[0][1], bsfit=ds, color='C0')
     plot_mu_ci(data, datacv, cv0=cv_levels[1][1], bsfit=ds, color='C1')
@@ -231,19 +254,19 @@ def fit_all(data, datacv, cv_levels=None, nmc=100, mc_seed=0, ci=95, upper_rp=No
     return ds
     
 
-def makedata(mu0=None, sigma=None, xi=None, alpha=None, datacv=None, nsmp=100, seed=1, ofile=None):
+def makedata(mu0=None, sigma0=None, xi=None, alpha=None, datacv=None, nsmp=100, seed=1, ofile=None):
     #specify params
     rng = np.random.default_rng()
     if mu0 is None:
         mu0 = rng.uniform(10, 20)
-    if sigma is None:
-        sigma = rng.uniform(0, 10)
+    if sigma0 is None:
+        sigma0 = rng.uniform(0, 10)
     if xi is None:
         xi = rng.uniform(-1, 1)
     if alpha is None:
         alpha = rng.uniform(-4, 4)
-    true_values = mu0,sigma,xi,alpha
-    note = 'true params:'.ljust(16) + f'{mu0=:.4g}; {sigma=:.4g}; {xi=:.4g}; {alpha=:.4g}'
+    true_values = mu0,sigma0,xi,alpha
+    note = 'true params:'.ljust(16) + f'{mu0=:.4g}; {sigma0=:.4g}; {xi=:.4g}; {alpha=:.4g}'
     print(note)
     #specify co-variate
     if datacv is None:
@@ -251,7 +274,7 @@ def makedata(mu0=None, sigma=None, xi=None, alpha=None, datacv=None, nsmp=100, s
     #generate data
     rng = np.random.default_rng(seed)#seed to generate genextreme random variables
     genextreme.random_state = rng
-    data = genextreme.rvs(-xi, loc=mu0+alpha*datacv, scale=sigma)
+    data = genextreme.rvs(-xi, loc=mu0*exp(alpha*datacv/mu0), scale=sigma0*exp(alpha*datacv/mu0))
     #show data
     plt.plot(datacv, data, ls='none', marker='o', fillstyle='none')
 
@@ -265,42 +288,47 @@ def makedata(mu0=None, sigma=None, xi=None, alpha=None, datacv=None, nsmp=100, s
     return data, datacv
 
         
-def test(mu0=None, sigma=None, xi=None, alpha=None, datacv=None, seed=1, nmc=100, mc_seed=0, ci=95, nsmp=100):
-    #specify params
+def test(mu0=None, sigma0=None, xi=None, alpha=None, datacv=None, seed=1, nmc=100, mc_seed=0, ci=95, nsmp=100):
+    #specify params randomly if None
     rng = np.random.default_rng()
     if mu0 is None:
         mu0 = rng.uniform(10, 20)
-    if sigma is None:
-        sigma = rng.uniform(0, 10)
+    if sigma0 is None:
+        sigma0 = rng.uniform(0, 10)
     if xi is None:
-        xi = rng.uniform(-1, 1)
+        #xi = rng.uniform(-1, 1)
+        xi = rng.uniform(-0.4, 0.4)
     if alpha is None:
-        alpha = rng.uniform(-4, 4)
-    true_values = mu0,sigma,xi,alpha
-    print('true params:'.ljust(16), f'{mu0=:.4g}; {sigma=:.4g}; {xi=:.4g}; {alpha=:.4g}')
+        #alpha = rng.uniform(-4, 4)
+        alpha = rng.uniform(0, 4)
+    true_values = mu0,sigma0,xi,alpha
+    print('true params:'.ljust(16), f'{mu0=:.4g}; {sigma0=:.4g}; {xi=:.4g}; {alpha=:.4g}')
     #specify co-variate
     if datacv is None:
         datacv = np.linspace(0, 2, nsmp)
     #generate data
     rng = np.random.default_rng(seed)#seed to generate genextreme random variables
     genextreme.random_state = rng
-    data = genextreme.rvs(-xi, loc=mu0+alpha*datacv, scale=sigma)
+    data = genextreme.rvs(-xi, loc=mu0*exp(alpha*datacv/mu0), scale=sigma0*exp(alpha*datacv/mu0))
     #validate
     #co-variate plot
     fig, ax = plt.subplots()
     plot_covariate(data, datacv, ax=ax, color='k')
+    ds = fit_bootstrap(data, datacv, nmc=nmc, mc_seed=mc_seed)
+    plot_mu_ci(data, datacv, cv0=np.array(datacv)[0], bsfit=ds, color='C0', ax=ax)
+    plot_mu_ci(data, datacv, cv0=np.array(datacv)[-1], bsfit=ds, color='C1', ax=ax)
     #fit_bootstrap plot
     fig,ax = plt.subplots()
-    ds = plot_fit_bootstrap(data, datacv, ('initial co-variate', datacv[0]), nmc=nmc, mc_seed=mc_seed, ci=ci, ax=ax, color='C0')#, upper_rp=data.size*40) 
-    plot_fit_bootstrap(data, datacv, ('final co-variate', datacv[-1]), bsfit=ds, ax=ax, color='C1')#, upper_rp=data.size*40) 
+    plot_fit_bootstrap(data, datacv, ('initial co-variate', datacv[0]), bsfit=ds, ci=ci, ax=ax, color='C0')#, upper_rp=data.size*40) 
+    plot_fit_bootstrap(data, datacv, ('final co-variate', datacv[-1]), bsfit=ds, ci=ci, ax=ax, color='C1')#, upper_rp=data.size*40) 
     ax.legend()
     #fit summary
     r = fit(data, datacv) 
-    mu0,sigma,xi,alpha = r.x
+    mu0,sigma0,xi,alpha = r.x
     ci_bounds = [(1-ci/100)/2, (1+ci/100)/2]
     s = ''
-    danames = ('mu0', 'sigma', 'xi', 'alpha')
-    pnames = ('$\\mu_0$:', '$\\sigma$:', '$\\xi$:', '$\\alpha$:')
+    danames = ('mu0', 'sigma0', 'xi', 'alpha')
+    pnames = ('$\\mu_0$:', '$\\sigma_0$:', '$\\xi$:', '$\\alpha$:')
     for ii,(daname,pname, tv) in enumerate(zip(danames, pnames, true_values)):
         q = ds[daname].quantile(ci_bounds, dim='mc')
         s += pname + f' {r.x[ii]:.4g}(true:{tv:.4g}); {ci}% CI: ({q[0].item():.4g}, {q[1].item():.4g})\n'
@@ -310,7 +338,7 @@ def test(mu0=None, sigma=None, xi=None, alpha=None, datacv=None, seed=1, nmc=100
 
 if __name__ == '__main__':
     from wyconfig import * #my plot settings
-    plt.close('all')
+    #plt.close('all')
     if len(sys.argv)<=1:
         test()
     elif len(sys.argv)>1 and sys.argv[1]=='test': #e.g. python -m wyextreme.gev_shift test xi=-0.1
